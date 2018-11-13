@@ -23,8 +23,13 @@
 #pragma comment(lib,"Rpcrt4.lib")
 #pragma comment(lib,"Ws2_32.lib")
 
+#ifdef DEBUG
+#define RPC_PRINTF(...) _cprintf(__VA_ARGS__)
+#else
+#define RPC_PRINTF(...) (void)0
+#endif
 //
-// Set the entry point to WinMain in relase configuration
+// Set the entry point to WinMain in release configuration
 //
 #ifndef _DEBUG
 #pragma comment(linker, "/SUBSYSTEM:WINDOWS")
@@ -54,12 +59,12 @@ ULONG NTAPI DecompilerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers)
 	HMODULE	hModule;
 
 	ModulePath[0]=0;
-	_cprintf("Exception catched.\n");
+	RPC_PRINTF("Exception catched.\n");
 	GetMappedFileNameA(GetCurrentProcess(), pExceptionPointers->ExceptionRecord->ExceptionAddress, (LPSTR)ModulePath, sizeof(ModulePath));
-	_cprintf("Code   : 0x%X\n", pExceptionPointers->ExceptionRecord->ExceptionCode);
-	_cprintf("Module : %s\n", ModulePath);
+	RPC_PRINTF("Code   : 0x%X\n", pExceptionPointers->ExceptionRecord->ExceptionCode);
+	RPC_PRINTF("Module : %s\n", ModulePath);
 	GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)pExceptionPointers->ExceptionRecord->ExceptionAddress, &hModule);
-	_cprintf("Address: 0x%p (0x%p + 0x%X)\n", pExceptionPointers->ExceptionRecord->ExceptionAddress, hModule, (UINT_PTR)pExceptionPointers->ExceptionRecord->ExceptionAddress - (UINT_PTR)hModule );
+	RPC_PRINTF("Address: 0x%p (0x%p + 0x%X)\n", pExceptionPointers->ExceptionRecord->ExceptionAddress, hModule, (UINT_PTR)pExceptionPointers->ExceptionRecord->ExceptionAddress - (UINT_PTR)hModule );
 	return (EXCEPTION_EXECUTE_HANDLER);
 }
 
@@ -89,7 +94,7 @@ HMODULE NTAPI LoadDecompilerEngine(RpcDecompilerHelper_T** ppRpcDecompilerHelper
 			pRpcDecompilerHelper = (RpcDecompilerHelper_T*)GetProcAddress(hLib, RPC_DECOMPILER_EXPORT_SYMBOL);
 			if (pRpcDecompilerHelper!=NULL) 
 			{
-				_cprintf("Found RpcDecompilerHelper %p\n", pRpcDecompilerHelper);
+				RPC_PRINTF("Found RpcDecompilerHelper %p\n", pRpcDecompilerHelper);
 				*ppRpcDecompilerHelper	= pRpcDecompilerHelper;
 				bResult = TRUE;
 				goto End;
@@ -218,12 +223,13 @@ void NTAPI UninitDecompilerInfo(RpcDecompilerInfo_T* pRpcDecompilerInfo)
 }
 
 
-#ifdef _DEBUG
+//#ifdef _DEBUG
 
 typedef struct _EnumCtxt_T{ 
 	void*			        pRpcCoreCtxt;
 	RpcCore_T*		        pRpcCore;
 	RpcDecompilerHelper_T*	pRpcDecompilerHelper;
+	char*					pOutputDirectory;
 }EnumCtxt_T;
 
 
@@ -259,7 +265,11 @@ static BOOL __fastcall EnumInterfaces(RpcInterfaceInfo_T* pRpcInterfaceInfo, Enu
         pDecompilerCtxt = pEnumCtxt->pRpcDecompilerHelper->RpcDecompilerInitFn(&LocalRpcViewHelper, &RpcDecompilerInfo);
 		if (pDecompilerCtxt!=NULL)
 		{
+
 			pEnumCtxt->pRpcDecompilerHelper->RpcDecompilerPrintAllProceduresFn( pDecompilerCtxt );
+			DWORD retn = GetFileAttributesA(pEnumCtxt->pOutputDirectory);
+			if (pEnumCtxt->pOutputDirectory != NULL && retn != INVALID_FILE_ATTRIBUTES)
+				pEnumCtxt->pRpcDecompilerHelper->RpcDecompilerExportAllProceduresFn(pDecompilerCtxt, pEnumCtxt->pOutputDirectory);
 			pEnumCtxt->pRpcDecompilerHelper->RpcDecompilerUninitFn(pDecompilerCtxt);
 		}
 	}__except( DecompilerExceptionFilter(GetExceptionInformation()) )
@@ -305,16 +315,39 @@ int DecompileAllInterfaces(RpcCore_T* pRpcCore)
     EnumCtxt.pRpcCoreCtxt           = pRpcCore->RpcCoreInitFn(FALSE);
     if (EnumCtxt.pRpcCoreCtxt==NULL) goto End;
 
-	_cprintf("Start scanning...\n");
-	EnumProcess( (EnumProcessCallbackFn_T)&EnumProc, &EnumCtxt );
-	_cprintf("Done\n");
+	RPC_PRINTF("Start scanning...\n");
+	EnumProcess( (EnumProcessCallbackFn_T)&EnumProc, &EnumCtxt );	
+	RPC_PRINTF("Done\n");
 End:
 	if (EnumCtxt.pRpcCoreCtxt != NULL) pRpcCore->RpcCoreUninitFn(EnumCtxt.pRpcCoreCtxt);
 	if (hDecompiler!=NULL) FreeLibrary(hDecompiler);
 	return (0);
 }
 
-#endif
+int DecompileAllInterfaces(RpcCore_T* pRpcCore, const char *OutputDirectory)
+{
+	EnumCtxt_T				EnumCtxt = { 0 };
+	RpcDecompilerHelper_T*	pRpcDecompilerHelper;
+	HMODULE					hDecompiler = NULL;
+
+	hDecompiler = LoadDecompilerEngine(&pRpcDecompilerHelper);
+	if (hDecompiler == NULL) goto End;
+
+	EnumCtxt.pRpcDecompilerHelper = pRpcDecompilerHelper;
+	EnumCtxt.pRpcCore = pRpcCore;
+	EnumCtxt.pRpcCoreCtxt = pRpcCore->RpcCoreInitFn(FALSE);
+	EnumCtxt.pOutputDirectory = (char*)OutputDirectory;
+
+	if (EnumCtxt.pRpcCoreCtxt == NULL) goto End;
+
+	EnumProcess((EnumProcessCallbackFn_T)&EnumProc, &EnumCtxt);
+	;
+End:
+	if (EnumCtxt.pRpcCoreCtxt != NULL) pRpcCore->RpcCoreUninitFn(EnumCtxt.pRpcCoreCtxt);
+	if (hDecompiler != NULL) FreeLibrary(hDecompiler);
+	return (0);
+}
+//#endif
 
 
 //------------------------------------------------------------------------------
@@ -352,7 +385,7 @@ End:
 		
 #endif
 	QApplication app(argc, argv);
-    QSettings   Settings(RPC_VIEW_ORGANIZATION_NAME, RPC_VIEW_APPLICATION_NAME);
+	QSettings   Settings(RPC_VIEW_ORGANIZATION_NAME, RPC_VIEW_APPLICATION_NAME);
  	//
 	// Set the current directory according to the given EXE path
 	//
@@ -361,7 +394,7 @@ End:
 	if (pSeparator!=NULL)
 	{
 		*pSeparator = 0;
-		_cprintf("%s\n",CurrentDirectory);
+		RPC_PRINTF("%s\n",CurrentDirectory);
 		SetCurrentDirectoryA((LPCSTR)CurrentDirectory);
 	}
 #ifdef _DEBUG
@@ -380,9 +413,9 @@ End:
 			}
 			else
 			{
-				_cprintf("Usage %s: [/f] [/DA]\n", argv[0]);
-				_cprintf("  /f : force loading for unsupported runtime versions \n");
-				_cprintf("  /DA : decompile all interfaces\n");
+				RPC_PRINTF("Usage %s: [/f] [/DA]\n", argv[0]);
+				RPC_PRINTF("  /f : force loading for unsupported runtime versions \n");
+				RPC_PRINTF("  /DA : decompile all interfaces\n");
 			}
 		}
 		//
@@ -397,13 +430,13 @@ End:
 		}
 		else
 		{
-			_cprintf("Usage %s: [/f]\n", argv[0]);
-			_cprintf("  /f : force loading for unsupported runtime versions \n");
+			RPC_PRINTF("Usage %s: [/f]\n", argv[0]);
+			RPC_PRINTF("  /f : force loading for unsupported runtime versions \n");
 		}
 	}
 #endif
     pMainWindow = new MainWindow_C(&gRpcCoreManager);
-
+	
 	hMainIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(ID_MAIN_ICON));
 	if (hMainIcon!=NULL)
 	{
